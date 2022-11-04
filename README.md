@@ -1,2 +1,2 @@
-# spark_engine
-A hobby project made with love.
+# graphics_engine
+A project for my university. Made with love (;

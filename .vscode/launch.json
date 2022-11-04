@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'spark_engine'",
+            "name": "Debug executable 'graphics_engine'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=spark_engine",
-                    "--package=spark_engine"
+                    "--bin=graphics_engine",
+                    "--package=graphics_engine"
                 ],
                 "filter": {
-                    "name": "spark_engine",
+                    "name": "graphics_engine",
                     "kind": "bin"
                 }
             },
@@ -25,16 +25,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'spark_engine'",
+            "name": "Debug unit tests in executable 'graphics_engine'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=spark_engine",
-                    "--package=spark_engine"
+                    "--bin=graphics_engine",
+                    "--package=graphics_engine"
                 ],
                 "filter": {
-                    "name": "spark_engine",
+                    "name": "graphics_engine",
                     "kind": "bin"
                 }
             },
