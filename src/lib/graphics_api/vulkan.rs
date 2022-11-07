@@ -2,9 +2,10 @@ use std::error;
 use ash::Entry;
 use ash::vk;
 use ash::prelude::VkResult;
-use ash::vk::Buffer;
 use winit::platform::unix::WindowExtUnix;
 use vk_shader_macros;
+use nalgebra::Matrix4;
+use nalgebra::Vector3;
 
 pub struct VulkanModule {
     pub entry: ash::Entry,
@@ -91,7 +92,7 @@ pub struct ModelModule<V, I> {
 
 #[repr(C)]
 pub struct InstanceData {
-    position: [f32; 3],
+    model_matrix: Matrix4<f32>,
     color: [f32; 3]
 }
 
@@ -148,15 +149,21 @@ impl VulkanModule {
         
         let mut cube = ModelModule::cube();
         cube.insert_visibly(InstanceData {
-            position: [0.0, 0.0, 0.0],
+            model_matrix: Matrix4::new_scaling(0.1),
             color: [1.0, 0.0, 0.0]
         });
         cube.insert_visibly(InstanceData {
-            position: [0.0, 0.25, 0.0],
+            model_matrix: Matrix4::new_translation(&Vector3::new(0.0, 0.25, 0.0))
+                * Matrix4::new_scaling(0.1),
             color: [0.6, 0.5, 0.0]
         });
         cube.insert_visibly(InstanceData {
-            position: [0.0, 0.5, 0.0],
+            model_matrix: Matrix4::from_scaled_axis(Vector3::new(
+                0.0,
+                0.0,
+                std::f32::consts::FRAC_PI_3
+            )) * Matrix4::new_translation(&Vector3::new(0.0, 0.5, 0.0))
+                * Matrix4::new_scaling(0.1),
             color: [0.0, 0.5, 0.0]
         });
         cube.update_vertex_buffer(&device, &mut allocator)?;
@@ -647,12 +654,30 @@ impl PipelineModule {
                 binding: 1,
                 location: 1,
                 offset: 0,
-                format: vk::Format::R32G32B32_SFLOAT
+                format: vk::Format::R32G32B32A32_SFLOAT
             },
             vk::VertexInputAttributeDescription {
                 binding: 1,
                 location: 2,
-                offset: 12,
+                offset: 16,
+                format: vk::Format::R32G32B32A32_SFLOAT
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 1,
+                location: 3,
+                offset: 32,
+                format: vk::Format::R32G32B32A32_SFLOAT
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 1,
+                location: 4,
+                offset: 48,
+                format: vk::Format::R32G32B32A32_SFLOAT
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 1,
+                location: 5,
+                offset: 64,
                 format: vk::Format::R32G32B32_SFLOAT
             }
         ];
@@ -664,7 +689,7 @@ impl PipelineModule {
             },
             vk::VertexInputBindingDescription {
                 binding: 1,
-                stride: 24,
+                stride: 76,
                 input_rate: vk::VertexInputRate::INSTANCE
             },
         ];
@@ -826,7 +851,7 @@ impl BufferModule {
             }
             allocator.free(self.allocation.take().unwrap()).unwrap();
 
-            let new_buffer = BufferModule::new(device, allocator, bytes_to_write_size, vk::BufferUsageFlags::VERTEX_BUFFER, self.memory_location)?;
+            let new_buffer = BufferModule::new(device, allocator, bytes_to_write_size, self.buffer_usage, self.memory_location)?;
             *self = new_buffer;
         }
         
@@ -1048,14 +1073,14 @@ impl<V, I> ModelModule<V, I> {
 
 impl ModelModule<[f32; 3], InstanceData> {
     fn cube() -> Self {
-        let lbf = [-0.1, 0.1, 0.0]; //lbf: left-bottom-front
-        let lbb = [-0.1, 0.1, 0.1];
-        let ltf = [-0.1, -0.1, 0.0];
-        let ltb = [-0.1, -0.1, 0.1];
-        let rbf = [0.1, 0.1, 0.0];
-        let rbb = [0.1, 0.1, 0.1];
-        let rtf = [0.1, -0.1, 0.0];
-        let rtb = [0.1, -0.1, 0.1];
+        let lbf = [-1.0, 1.0, 0.0]; //lbf: left-bottom-front
+        let lbb = [-1.0, 1.0, 1.0];
+        let ltf = [-1.0, -1.0, 0.0];
+        let ltb = [-1.0, -1.0, 1.0];
+        let rbf = [1.0, 1.0, 0.0];
+        let rbb = [1.0, 1.0, 1.0];
+        let rtf = [1.0, -1.0, 0.0];
+        let rtb = [1.0, -1.0, 1.0];
         Self {
             vertex_data: vec![
                 lbf, lbb, rbb, lbf, rbb, rbf, //bottom
