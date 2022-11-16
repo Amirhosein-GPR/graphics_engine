@@ -78,7 +78,8 @@ pub struct BufferModule {
     allocation: Option<gpu_allocator::vulkan::Allocation>,
     size_in_bytes: u64,
     buffer_usage: vk::BufferUsageFlags,
-    memory_location: gpu_allocator::MemoryLocation
+    memory_location: gpu_allocator::MemoryLocation,
+    bind_buffer: bool
 }
 
 #[derive(Debug, Clone)]
@@ -97,8 +98,8 @@ pub struct ModelModule<V, I> {
 
 #[repr(C)]
 pub struct InstanceData {
-    model_matrix: Matrix4<f32>,
-    color: [f32; 3]
+    pub model_matrix: Matrix4<f32>,
+    pub color: [f32; 3]
 }
 
 impl VulkanModule {
@@ -151,25 +152,8 @@ impl VulkanModule {
             buffer_device_address: false
         };
         let mut allocator = gpu_allocator::vulkan::Allocator::new(&allocator_create_description)?;
-        
-        let mut cube = ModelModule::cube();
-        cube.insert_visibly(InstanceData {
-            model_matrix: Matrix4::new_translation(&Vector3::new(0.05, 0.05, 0.0))
-                * Matrix4::new_scaling(0.1),
-            color: [1.0, 1.0, 0.2]
-        });
-        cube.insert_visibly(InstanceData {
-            model_matrix: Matrix4::new_translation(&Vector3::new(0.0, 0.0, 0.1))
-                * Matrix4::new_scaling(0.1),
-            color: [0.2, 0.4, 1.0]
-        });
-        cube.update_vertex_buffer(&device, &mut allocator)?;
-        cube.update_instance_buffer(&device, &mut allocator)?;
-        let model_modules = vec![cube];
 
         let command_buffers = Self::create_command_buffers(&device, &command_pool_module, swapchain_module.framebuffers.len() as u32)?;
-
-        Self::fill_command_buffers(&command_buffers, &device, &render_pass, &swapchain_module, &pipeline_module, &model_modules)?;
 
         Ok(VulkanModule {
             entry,
@@ -187,7 +171,7 @@ impl VulkanModule {
             command_pool_module,
             command_buffers,
             allocator: Some(allocator),
-            model_modules
+            model_modules: vec![]
         })
     }
 
@@ -403,6 +387,49 @@ impl VulkanModule {
             }
         }
 
+        Ok(())
+    }
+
+    pub fn update_command_buffers(&mut self, index: usize) -> Result<(), vk::Result> {
+        let command_buffer = self.command_buffers[index];
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder();
+
+        unsafe {
+            self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info)?;
+        }
+
+        let clear_values = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.8, 1.0]
+                }
+            },
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0
+                }
+            }
+        ];
+
+        let render_pass_begin_info = vk::RenderPassBeginInfo::builder()
+            .render_pass(self.render_pass)
+            .framebuffer(self.swapchain_module.framebuffers[index])
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.swapchain_module.extent
+            })
+            .clear_values(&clear_values);
+
+        unsafe {
+            self.device.cmd_begin_render_pass(command_buffer, &render_pass_begin_info, vk::SubpassContents::INLINE);
+            self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline_module.pipeline);
+            for model_module in &self.model_modules {
+                model_module.draw(&self.device, command_buffer);
+            }
+            self.device.cmd_end_render_pass(command_buffer);
+            self.device.end_command_buffer(command_buffer)?;
+        }
         Ok(())
     }
 
@@ -923,7 +950,8 @@ impl BufferModule {
             buffer,
             size_in_bytes,
             buffer_usage,
-            memory_location
+            memory_location,
+            bind_buffer: true
         })
     }
 
@@ -947,7 +975,10 @@ impl BufferModule {
         
         let allocation = self.allocation.take().unwrap();
 
-        unsafe { device.bind_buffer_memory(self.buffer, allocation.memory(), allocation.offset())? };
+        if self.bind_buffer {
+            unsafe { device.bind_buffer_memory(self.buffer, allocation.memory(), allocation.offset())? };
+            self.bind_buffer = false;
+        }
         let data_pointer = allocation.mapped_ptr().expect("Error: Can't map to vertex buffer's memory for position!").as_ptr() as *mut T;
         unsafe { data_pointer.copy_from_nonoverlapping(data.as_ptr(), data.len()) };
 
@@ -969,7 +1000,7 @@ impl std::error::Error for InvalidHandle {
 }
 
 impl<V, I> ModelModule<V, I> {
-    fn get(&self, handle: usize) -> Option<&I> {
+    pub fn get(&self, handle: usize) -> Option<&I> {
         if let Some(&index) = self.handle_to_index.get(&handle) {
             self.instances.get(index)
         } else {
@@ -977,7 +1008,7 @@ impl<V, I> ModelModule<V, I> {
         }
     }
 
-    fn get_mut(&mut self, handle: usize) -> Option<&mut I> {
+    pub fn get_mut(&mut self, handle: usize) -> Option<&mut I> {
         if let Some(&index) = self.handle_to_index.get(&handle) {
             self.instances.get_mut(index)
         } else {
@@ -985,7 +1016,7 @@ impl<V, I> ModelModule<V, I> {
         }
     }
 
-    fn swap_by_handle(&mut self, handle1: usize, handle2: usize) -> Result<(), InvalidHandle> {
+    pub fn swap_by_handle(&mut self, handle1: usize, handle2: usize) -> Result<(), InvalidHandle> {
         if handle1 == handle2 {
             return Ok(());
         }
@@ -1021,7 +1052,7 @@ impl<V, I> ModelModule<V, I> {
         // self.handle_to_index.insert(index2, handle1);
     }
 
-    fn is_visible(&self, handle: usize) -> Result<bool, InvalidHandle> {
+    pub fn is_visible(&self, handle: usize) -> Result<bool, InvalidHandle> {
         if let Some(index) = self.handle_to_index.get(&handle) {
             Ok(index < &self.first_invisible_instance)
         } else {
@@ -1029,7 +1060,7 @@ impl<V, I> ModelModule<V, I> {
         }
     }
 
-    fn make_visible(&mut self, handle: usize) -> Result<(), InvalidHandle> {
+    pub fn make_visible(&mut self, handle: usize) -> Result<(), InvalidHandle> {
         if let Some(&index) = self.handle_to_index.get(&handle) {
             if index < self.first_invisible_instance {
                 return Ok(());
@@ -1043,7 +1074,7 @@ impl<V, I> ModelModule<V, I> {
         }
     }
 
-    fn make_invisible(&mut self, handle: usize) -> Result<(), InvalidHandle> {
+    pub fn make_invisible(&mut self, handle: usize) -> Result<(), InvalidHandle> {
         if let Some(&index) = self.handle_to_index.get(&handle) {
             if index >= self.first_invisible_instance {
                 return Ok(());
@@ -1057,7 +1088,7 @@ impl<V, I> ModelModule<V, I> {
         }
     }
 
-    fn insert(&mut self, instance: I) -> usize {
+    pub fn insert(&mut self, instance: I) -> usize {
         let handle = self.next_handle;
         self.next_handle += 1;
         let index = self.instances.len();
@@ -1067,13 +1098,13 @@ impl<V, I> ModelModule<V, I> {
         handle
     }
 
-    fn insert_visibly(&mut self, instance: I) -> usize {
+    pub fn insert_visibly(&mut self, instance: I) -> usize {
         let handle = self.insert(instance);
         self.make_visible(handle).ok();
         handle
     }
 
-    fn remove(&mut self, handle: usize) -> Result<I, InvalidHandle> {
+    pub fn remove(&mut self, handle: usize) -> Result<I, InvalidHandle> {
         if let Some(&index) = self.handle_to_index.get(&handle) {
             if index < self.first_invisible_instance {
                 self.first_invisible_instance -= 1;
@@ -1088,7 +1119,7 @@ impl<V, I> ModelModule<V, I> {
         }
     }
 
-    fn update_vertex_buffer(&mut self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator) -> Result<(), vk::Result> {
+    pub fn update_vertex_buffer(&mut self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator) -> Result<(), vk::Result> {
         if let Some(vertex_buffer_module) = &mut self.vertex_buffer_module {
             vertex_buffer_module.fill(
                 device,
@@ -1109,7 +1140,7 @@ impl<V, I> ModelModule<V, I> {
         }
     }
 
-    fn update_instance_buffer(&mut self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator) -> Result<(), vk::Result> {
+    pub fn update_instance_buffer(&mut self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator) -> Result<(), vk::Result> {
         if let Some(instance_buffer_module) = &mut self.instance_buffer_module {
             instance_buffer_module.fill(
                 device,
@@ -1162,7 +1193,7 @@ impl<V, I> ModelModule<V, I> {
 }
 
 impl ModelModule<[f32; 3], InstanceData> {
-    fn cube() -> Self {
+    pub fn cube() -> Self {
         let lbf = [-1.0, 1.0, 0.0]; //lbf: left-bottom-front
         let lbb = [-1.0, 1.0, 1.0];
         let ltf = [-1.0, -1.0, 0.0];
