@@ -22,7 +22,7 @@ impl Engine {
     }
 
     pub fn run(mut self) {
-        let mut camera = Camera::default();
+        let mut camera = Camera::builder().build();
         self.event_loop.run(move |event, _event_loop_window_target, control_flow| {
             match event {
                 event::Event::WindowEvent {

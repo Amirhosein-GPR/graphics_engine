@@ -109,7 +109,22 @@ pub struct Camera {
     pub view_matrix: Matrix4<f32>,
     pub position: Vector3<f32>,
     pub view_direction: nalgebra::Unit<Vector3<f32>>,
-    pub down_direction: nalgebra::Unit<Vector3<f32>>
+    pub down_direction: nalgebra::Unit<Vector3<f32>>,
+    pub fovy: f32,
+    pub aspect: f32,
+    pub near: f32,
+    pub far: f32,
+    pub projection_matrix: Matrix4<f32>
+}
+
+pub struct CameraBuilder {
+    pub position: Vector3<f32>,
+    pub view_direction: nalgebra::Unit<Vector3<f32>>,
+    pub down_direction: nalgebra::Unit<Vector3<f32>>,
+    pub fovy: f32,
+    pub aspect: f32,
+    pub near: f32,
+    pub far: f32
 }
 
 impl VulkanModule {
@@ -168,11 +183,11 @@ impl VulkanModule {
         let mut uniform_buffer = BufferModule::new(
             &device,
             &mut allocator,
-            64,
+            128,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
             gpu_allocator::MemoryLocation::CpuToGpu
         )?;
-        let camera_transform: [[f32; 4]; 4] = Matrix4::identity().into();
+        let camera_transform: [[[f32; 4]; 4]; 2] = [Matrix4::identity().into(), Matrix4::identity().into()];
         uniform_buffer.fill(&device, &mut allocator, &camera_transform)?;
         let descriptor_pool_size = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -192,7 +207,7 @@ impl VulkanModule {
             let descriptor_buffer_infos = [vk::DescriptorBufferInfo {
                 buffer: uniform_buffer.buffer,
                 offset: 0,
-                range: 64
+                range: 128
             }];
             let write_descriptor_sets = [vk::WriteDescriptorSet::builder()
                 .dst_set(*descriptor_set)
@@ -1300,8 +1315,20 @@ impl ModelModule<[f32; 3], InstanceData> {
 }
 
 impl Camera {
+    pub fn builder() -> CameraBuilder {
+        CameraBuilder {
+            position: Vector3::new(0.0, -3.0, -3.0),
+            view_direction: nalgebra::Unit::new_normalize(Vector3::new(0.0, 1.0, 1.0)),
+            down_direction: nalgebra::Unit::new_normalize(Vector3::new(0.0, 1.0, -1.0)),
+            fovy: std::f32::consts::FRAC_PI_3,
+            aspect: 800.0 / 600.0,
+            near: 0.1,
+            far: 100.0
+        }
+    }
+
     pub fn update_buffer(&self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator, buffer: &mut BufferModule) {
-        let data: [[f32; 4]; 4] = self.view_matrix.into();
+        let data: [[[f32; 4]; 4]; 2] = [self.view_matrix.into(), self.projection_matrix.into()];
         buffer.fill(device, allocator, &data).expect("Error: Can't fill uniform buffer.");
     }
 
@@ -1324,6 +1351,28 @@ impl Camera {
             0.0,
             0.0,
             1.0
+        );
+    }
+
+    fn update_projection_matrix(&mut self) {
+        let d = 1.0 / (0.5 * self.fovy).tan();
+        self.projection_matrix = Matrix4::new(
+            d / self.aspect,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            d,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            self.far / (self.far - self.near),
+            -self.near * self.far / (self.far - self.near),
+            0.0,
+            0.0,
+            1.0,
+            0.0
         );
     }
 
@@ -1359,14 +1408,73 @@ impl Camera {
     }
 }
 
-impl Default for Camera {
-    fn default() -> Self {
-        Self {
-            view_matrix: Matrix4::identity(),
-            position: Vector3::new(0.0, 0.0, 0.0),
-            view_direction: nalgebra::Unit::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
-            down_direction: nalgebra::Unit::new_normalize(Vector3::new(0.0, 1.0, 0.0))
+impl CameraBuilder {
+    pub fn position(mut self, pos: Vector3<f32>) -> CameraBuilder {
+        self.position = pos;
+        self
+    }
+
+    pub fn fovy(mut self, fovy: f32) -> CameraBuilder {
+        self.fovy = fovy.max(0.01).min(std::f32::consts::PI - 0.01);
+        self
+    }
+
+    pub fn aspect(mut self, aspect: f32) -> CameraBuilder {
+        self.aspect = aspect;
+        self
+    }
+
+    pub fn near(mut self, near: f32) -> CameraBuilder {
+        if near <= 0.0 {
+            println!("Warning: Near plane is set to negative value: {}. This can be a bug!", near);
         }
+        self.near = near;
+        self
+    }
+
+    pub fn far(mut self, far: f32) -> CameraBuilder {
+        if far <= 0.0 {
+            println!("Warning: Far plane is set to negative value: {}. This can be a bug!", far);
+        }
+        self.far = far;
+        self
+    }
+
+    pub fn view_direction(mut self, direction: Vector3<f32>) -> CameraBuilder {
+        self.view_direction = nalgebra::Unit::new_normalize(direction);
+        self
+    }
+
+    pub fn down_direction(mut self, direction: Vector3<f32>) -> CameraBuilder {
+        self.down_direction = nalgebra::Unit::new_normalize(direction);
+        self
+    }
+
+    pub fn build(self) -> Camera {
+        if self.far < self.near {
+            println!(
+                "Warning: Far plane (at {}) is closer than near plane (at{}). This can be a bug!",
+                self.far,
+                self.near
+            );
+        }
+        let mut camera = Camera {
+            position: self.position,
+            view_direction: self.view_direction,
+            down_direction: nalgebra::Unit::new_normalize(
+                self.down_direction.as_ref() -
+                    self.down_direction.as_ref().dot(self.view_direction.as_ref()) * self.view_direction.as_ref()
+            ),
+            fovy: self.fovy,
+            aspect: self.aspect,
+            near: self.near,
+            far: self.far,
+            view_matrix: Matrix4::identity(),
+            projection_matrix: Matrix4::identity()
+        };
+        camera.update_projection_matrix();
+        camera.update_view_matrix();
+        camera
     }
 }
 
