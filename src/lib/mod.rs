@@ -1,6 +1,7 @@
+use graphics_api::vulkan::Camera;
 use ash::vk;
 use winit::{event, event_loop};
-use nalgebra::{Matrix4, Vector3};
+use nalgebra::Matrix4;
 
 pub mod graphics_api;
 use graphics_api::vulkan;
@@ -21,7 +22,7 @@ impl Engine {
     }
 
     pub fn run(mut self) {
-        let mut angle = 0.0;
+        let mut camera = Camera::default();
         self.event_loop.run(move |event, _event_loop_window_target, control_flow| {
             match event {
                 event::Event::WindowEvent {
@@ -30,14 +31,38 @@ impl Engine {
                 } => {
                     *control_flow = event_loop::ControlFlow::Exit;
                 },
+                event::Event::WindowEvent {
+                    event: event::WindowEvent::KeyboardInput { input, .. },
+                    ..
+                } => match input {
+                    event::KeyboardInput {
+                        state: event::ElementState::Pressed,
+                        virtual_keycode: Some(key_code),
+                        ..
+                    } => match key_code {
+                        event::VirtualKeyCode::Right => {
+                            camera.turn_right(0.1);
+                        },
+                        event::VirtualKeyCode::Left => {
+                            camera.turn_left(0.1);
+                        },
+                        event::VirtualKeyCode::Up => {
+                            camera.move_forward(0.05);
+                        },
+                        event::VirtualKeyCode::Down => {
+                            camera.move_backward(0.05);
+                        },
+                        event::VirtualKeyCode::PageUp => {
+                            camera.turn_up(0.02);
+                        },
+                        event::VirtualKeyCode::PageDown => {
+                            camera.turn_down(0.02);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
                 event::Event::MainEventsCleared => {
-                    angle += 0.01;
-                    self.vulkan_module.model_modules[0]
-                        .get_mut(self.model_handles[0])
-                        .unwrap()
-                        .model_matrix = Matrix4::from_scaled_axis(Vector3::new(0.0, 0.0, angle))
-                        * Matrix4::new_translation(&Vector3::new(0.0, 0.5, 0.0))
-                        * Matrix4::new_scaling(0.1);
                     self.vulkan_module.window.request_redraw();
                 },
                 event::Event::RedrawRequested(_window_id) => {
@@ -69,6 +94,7 @@ impl Engine {
                             .expect("Error: Can't reset fences!")
                     }
 
+                    camera.update_buffer(&self.vulkan_module.device, self.vulkan_module.allocator.as_mut().unwrap(), &mut self.vulkan_module.uniform_buffer);
                     for model_module in &mut self.vulkan_module.model_modules {
                         model_module.update_instance_buffer(&self.vulkan_module.device, self.vulkan_module.allocator.as_mut().unwrap())
                             .expect("Error: Can't update instance buffer!");

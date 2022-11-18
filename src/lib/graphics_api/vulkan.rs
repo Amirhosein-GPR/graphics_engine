@@ -4,8 +4,7 @@ use ash::vk;
 use ash::prelude::VkResult;
 use winit::platform::unix::WindowExtUnix;
 use vk_shader_macros;
-use nalgebra::Matrix4;
-use nalgebra::Vector3;
+use nalgebra::{Matrix4, Vector3};
 
 pub struct VulkanModule {
     pub entry: ash::Entry,
@@ -23,7 +22,10 @@ pub struct VulkanModule {
     pub command_pool_module: CommandPoolModule,
     pub command_buffers: Vec<vk::CommandBuffer>,
     pub allocator: Option<gpu_allocator::vulkan::Allocator>,
-    pub model_modules: Vec<ModelModule<[f32; 3], InstanceData>>
+    pub model_modules: Vec<ModelModule<[f32; 3], InstanceData>>,
+    pub uniform_buffer: BufferModule,
+    pub descriptor_pool: vk::DescriptorPool,
+    pub descriptor_sets: Vec<vk::DescriptorSet>
 }
 
 pub struct DebugUtilsModule {
@@ -65,7 +67,8 @@ pub struct SwapchainModule {
 
 pub struct PipelineModule {
     pub pipeline: vk::Pipeline,
-    pub layout: vk::PipelineLayout
+    pub layout: vk::PipelineLayout,
+    pub descriptor_set_layouts: Vec<vk::DescriptorSetLayout>
 }
 
 pub struct CommandPoolModule {
@@ -100,6 +103,13 @@ pub struct ModelModule<V, I> {
 pub struct InstanceData {
     pub model_matrix: Matrix4<f32>,
     pub color: [f32; 3]
+}
+
+pub struct Camera {
+    pub view_matrix: Matrix4<f32>,
+    pub position: Vector3<f32>,
+    pub view_direction: nalgebra::Unit<Vector3<f32>>,
+    pub down_direction: nalgebra::Unit<Vector3<f32>>
 }
 
 impl VulkanModule {
@@ -155,6 +165,44 @@ impl VulkanModule {
 
         let command_buffers = Self::create_command_buffers(&device, &command_pool_module, swapchain_module.framebuffers.len() as u32)?;
 
+        let mut uniform_buffer = BufferModule::new(
+            &device,
+            &mut allocator,
+            64,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            gpu_allocator::MemoryLocation::CpuToGpu
+        )?;
+        let camera_transform: [[f32; 4]; 4] = Matrix4::identity().into();
+        uniform_buffer.fill(&device, &mut allocator, &camera_transform)?;
+        let descriptor_pool_size = [vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: swapchain_module.amount_of_images
+        }];
+        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::builder()
+            .max_sets(swapchain_module.amount_of_images)
+            .pool_sizes(&descriptor_pool_size);
+        let descriptor_pool = unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None)? };
+        let descriptor_layouts = vec![pipeline_module.descriptor_set_layouts[0]; swapchain_module.amount_of_images as usize];
+        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::builder()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&descriptor_layouts);
+        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&descriptor_set_allocate_info)? };
+
+        for (i, descriptor_set) in descriptor_sets.iter().enumerate() {
+            let descriptor_buffer_infos = [vk::DescriptorBufferInfo {
+                buffer: uniform_buffer.buffer,
+                offset: 0,
+                range: 64
+            }];
+            let write_descriptor_sets = [vk::WriteDescriptorSet::builder()
+                .dst_set(*descriptor_set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(&descriptor_buffer_infos)
+                .build()];
+            unsafe {device.update_descriptor_sets(&write_descriptor_sets, &[])};
+        }
+
         Ok(VulkanModule {
             entry,
             instance,
@@ -171,7 +219,10 @@ impl VulkanModule {
             command_pool_module,
             command_buffers,
             allocator: Some(allocator),
-            model_modules: vec![]
+            model_modules: vec![],
+            uniform_buffer,
+            descriptor_pool,
+            descriptor_sets
         })
     }
 
@@ -424,6 +475,14 @@ impl VulkanModule {
         unsafe {
             self.device.cmd_begin_render_pass(command_buffer, &render_pass_begin_info, vk::SubpassContents::INLINE);
             self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline_module.pipeline);
+            self.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_module.layout,
+                0,
+                &[self.descriptor_sets[index]],
+                &[]
+            );
             for model_module in &self.model_modules {
                 model_module.draw(&self.device, command_buffer);
             }
@@ -451,6 +510,8 @@ impl Drop for VulkanModule {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().expect("Error: Device can't wait on vulkan module when being dropped!");
+            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
+            self.device.destroy_buffer(self.uniform_buffer.buffer, None);
             let mut allocator = self.allocator.take().unwrap();
             for model_module in &mut self.model_modules {
                 if let Some(vertex_buffer_module) = &mut model_module.vertex_buffer_module {
@@ -856,7 +917,19 @@ impl PipelineModule {
         let color_blend_state_create_info = vk::PipelineColorBlendStateCreateInfo::builder()
             .attachments(&color_blend_attachment_states);
 
-        let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::builder();
+        let descriptor_set_layout_binding = [vk::DescriptorSetLayoutBinding::builder()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .build()
+        ];
+        let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&descriptor_set_layout_binding);
+        let descriptor_set_layouts = vec![unsafe { device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None)? }];
+        let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(&descriptor_set_layouts);
+
         let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None)? };
 
         let depth_stencil_state_create_info = vk::PipelineDepthStencilStateCreateInfo::builder()
@@ -889,11 +962,15 @@ impl PipelineModule {
 
         Ok(Self {
             pipeline,
-            layout: pipeline_layout
+            layout: pipeline_layout,
+            descriptor_set_layouts
         })
     }
 
     unsafe fn cleanup(&self, device: &ash::Device) {
+        for descriptor_set_layout in &self.descriptor_set_layouts {
+            device.destroy_descriptor_set_layout(*descriptor_set_layout, None);
+        }
         device.destroy_pipeline(self.pipeline, None);
         device.destroy_pipeline_layout(self.layout, None);
     }
@@ -1218,6 +1295,77 @@ impl ModelModule<[f32; 3], InstanceData> {
             next_handle: 0,
             vertex_buffer_module: None,
             instance_buffer_module: None
+        }
+    }
+}
+
+impl Camera {
+    pub fn update_buffer(&self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator, buffer: &mut BufferModule) {
+        let data: [[f32; 4]; 4] = self.view_matrix.into();
+        buffer.fill(device, allocator, &data).expect("Error: Can't fill uniform buffer.");
+    }
+
+    fn update_view_matrix(&mut self) {
+        let right = nalgebra::Unit::new_normalize(self.down_direction.cross(&self.view_direction));
+        self.view_matrix = nalgebra::Matrix4::new(
+            right.x,
+            right.y,
+            right.z,
+            -right.dot(&self.position),
+            self.down_direction.x,
+            self.down_direction.y,
+            self.down_direction.z,
+            -self.down_direction.dot(&self.position),
+            self.view_direction.x,
+            self.view_direction.y,
+            self.view_direction.z,
+            -self.view_direction.dot(&self.position),
+            0.0,
+            0.0,
+            0.0,
+            1.0
+        );
+    }
+
+    pub fn move_forward(&mut self, distance: f32) {
+        self.position += distance * self.view_direction.as_ref();
+        self.update_view_matrix();
+    }
+
+    pub fn move_backward(&mut self, distance: f32) {
+        self.move_forward(-distance);
+    }
+
+    pub fn turn_right(&mut self, angle: f32) {
+        let rotation = nalgebra::Rotation3::from_axis_angle(&self.down_direction, angle);
+        self.view_direction = rotation * self.view_direction;
+        self.update_view_matrix();
+    }
+
+    pub fn turn_left(&mut self, angle: f32) {
+        self.turn_right(-angle);
+    }
+
+    pub fn turn_up(&mut self, angle: f32) {
+        let right = nalgebra::Unit::new_normalize(self.down_direction.cross(&self.view_direction));
+        let rotation = nalgebra::Rotation3::from_axis_angle(&right, angle);
+        self.view_direction = rotation * self.view_direction;
+        self.down_direction = rotation * self.down_direction;
+        self.update_view_matrix();
+    }
+
+    pub fn turn_down(&mut self, angle: f32) {
+        self.turn_up(-angle);
+    }
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Self {
+            view_matrix: Matrix4::identity(),
+            position: Vector3::new(0.0, 0.0, 0.0),
+            view_direction: nalgebra::Unit::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
+            down_direction: nalgebra::Unit::new_normalize(Vector3::new(0.0, 1.0, 0.0))
         }
     }
 }
