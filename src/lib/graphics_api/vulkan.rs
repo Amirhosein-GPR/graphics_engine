@@ -90,13 +90,15 @@ pub struct InvalidHandle;
 
 pub struct ModelModule<V, I> {
     vertex_data: Vec<V>,
+    index_data: Vec<u32>,
     handle_to_index: std::collections::HashMap<usize, usize>,
     handles: Vec<usize>,
     instances: Vec<I>,
     first_invisible_instance: usize,
     next_handle: usize,
     vertex_buffer_module: Option<BufferModule>,
-    instance_buffer_module: Option<BufferModule>
+    index_buffer_module: Option<BufferModule>,
+    instance_buffer_module: Option<BufferModule>,
 }
 
 #[repr(C)]
@@ -536,6 +538,10 @@ impl Drop for VulkanModule {
                 if let Some(instance_buffer_module) = &mut model_module.instance_buffer_module {
                     self.device.destroy_buffer(instance_buffer_module.buffer, None);
                     allocator.free(instance_buffer_module.allocation.take().unwrap()).unwrap();
+                }
+                if let Some(index_buffer_module) = &mut model_module.index_buffer_module {
+                    self.device.destroy_buffer(index_buffer_module.buffer, None);
+                    allocator.free(index_buffer_module.allocation.take().unwrap()).unwrap();
                 }
             }
             std::mem::drop(allocator);
@@ -1232,6 +1238,27 @@ impl<V, I> ModelModule<V, I> {
         }
     }
 
+    pub fn update_index_buffer(&mut self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator) -> Result<(), vk::Result> {
+        if let Some(index_buffer_module) = &mut self.index_buffer_module {
+            index_buffer_module.fill(
+                device,
+                allocator,
+                &self.index_data
+            )?;
+            Ok(())
+        } else {
+            let size_in_bytes = (self.index_data.len() * std::mem::size_of::<f32>()) as u64;
+            let mut index_buffer_module = BufferModule::new(&device, allocator, size_in_bytes, vk::BufferUsageFlags::INDEX_BUFFER, gpu_allocator::MemoryLocation::CpuToGpu)?;
+            index_buffer_module.fill(
+                device,
+                allocator,
+                &self.index_data
+            )?;
+            self.index_buffer_module = Some(index_buffer_module);
+            Ok(())
+        }
+    }
+
     pub fn update_instance_buffer(&mut self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator) -> Result<(), vk::Result> {
         if let Some(instance_buffer_module) = &mut self.instance_buffer_module {
             instance_buffer_module.fill(
@@ -1255,28 +1282,37 @@ impl<V, I> ModelModule<V, I> {
 
     fn draw(&self, device: &ash::Device, command_buffer: vk::CommandBuffer) {
         if let Some(vertex_buffer_module) = &self.vertex_buffer_module {
-            if let Some(instance_buffer_module) = &self.instance_buffer_module {
-                if self.first_invisible_instance > 0 {
-                    unsafe {
-                        device.cmd_bind_vertex_buffers(
-                            command_buffer,
-                            0,
-                            &[vertex_buffer_module.buffer],
-                            &[0]
-                        );
-                        device.cmd_bind_vertex_buffers(
-                            command_buffer,
-                            1,
-                            &[instance_buffer_module.buffer],
-                            &[0]
-                        );
-                        device.cmd_draw(
-                            command_buffer,
-                            self.vertex_data.len() as u32,
-                            self.first_invisible_instance as u32,
-                            0,
-                            0
-                        )
+            if let Some(index_buffer_module) = &self.index_buffer_module {
+                if let Some(instance_buffer_module) = &self.instance_buffer_module {
+                    if self.first_invisible_instance > 0 {
+                        unsafe {
+                            device.cmd_bind_vertex_buffers(
+                                command_buffer,
+                                0,
+                                &[vertex_buffer_module.buffer],
+                                &[0]
+                            );
+                            device.cmd_bind_vertex_buffers(
+                                command_buffer,
+                                1,
+                                &[instance_buffer_module.buffer],
+                                &[0]
+                            );
+                            device.cmd_bind_index_buffer(
+                                command_buffer,
+                                index_buffer_module.buffer,
+                                0,
+                                vk::IndexType::UINT32
+                            );
+                            device.cmd_draw_indexed(
+                                command_buffer,
+                                self.index_data.len() as u32,
+                                self.first_invisible_instance as u32,
+                                0,
+                                0,
+                                0
+                            );
+                        }
                     }
                 }
             }
@@ -1286,22 +1322,23 @@ impl<V, I> ModelModule<V, I> {
 
 impl ModelModule<[f32; 3], InstanceData> {
     pub fn cube() -> Self {
-        let lbf = [-1.0, 1.0, 0.0]; //lbf: left-bottom-front
+        let lbf = [-1.0, 1.0, -1.0]; //lbf: left-bottom-front
         let lbb = [-1.0, 1.0, 1.0];
-        let ltf = [-1.0, -1.0, 0.0];
+        let ltf = [-1.0, -1.0, -1.0];
         let ltb = [-1.0, -1.0, 1.0];
-        let rbf = [1.0, 1.0, 0.0];
+        let rbf = [1.0, 1.0, -1.0];
         let rbb = [1.0, 1.0, 1.0];
-        let rtf = [1.0, -1.0, 0.0];
+        let rtf = [1.0, -1.0, -1.0];
         let rtb = [1.0, -1.0, 1.0];
         Self {
-            vertex_data: vec![
-                lbf, lbb, rbb, lbf, rbb, rbf, //bottom
-                ltf, rtb, ltb, ltf, rtf, rtb, //top
-                lbf, rtf, ltf, lbf, rbf, rtf, //front
-                lbb, ltb, rtb, lbb, rtb, rbb, //back
-                lbf, ltf, lbb, lbb, ltf, ltb, //left
-                rbf, rbb, rtf, rbb, rtb, rtf, //right
+            vertex_data: vec![lbf, lbb, ltf, ltb, rbf, rbb, rtf, rtb],
+            index_data: vec![
+                0, 1, 5, 0, 5, 4, //bottom
+                2, 7, 3, 2, 6, 7, //top
+                0, 6, 2, 0, 4, 6, //front
+                1, 3, 7, 1, 7, 5, //back
+                0, 2, 1, 1, 2, 3, //left
+                4, 5, 6, 5, 7, 6 //right
             ],
             handle_to_index: std::collections::HashMap::new(),
             handles: Vec::new(),
@@ -1309,6 +1346,7 @@ impl ModelModule<[f32; 3], InstanceData> {
             first_invisible_instance: 0,
             next_handle: 0,
             vertex_buffer_module: None,
+            index_buffer_module: None,
             instance_buffer_module: None
         }
     }

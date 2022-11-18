@@ -67,6 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     cube.update_vertex_buffer(&vulkan_module.device, &mut vulkan_module.allocator.as_mut().unwrap())?;
+    cube.update_index_buffer(&vulkan_module.device, &mut vulkan_module.allocator.as_mut().unwrap())?;
     cube.update_instance_buffer(&vulkan_module.device, &mut vulkan_module.allocator.as_mut().unwrap())?;
     vulkan_module.model_modules = vec![cube];
 
