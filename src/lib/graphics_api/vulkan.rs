@@ -244,7 +244,7 @@ impl VulkanModule {
     }
 
     fn initialize_instance(entry: &ash::Entry, debug_utils_messenger_create_info: &mut vk::DebugUtilsMessengerCreateInfoEXT, layer_names: &[std::ffi::CString], extension_names: &[std::ffi::CString]) -> VkResult<ash::Instance> {
-        let engine_name = std::ffi::CString::new("SparkEngine").unwrap();
+        let engine_name = std::ffi::CString::new("GraphicsEngine").unwrap();
         let application_name = std::ffi::CString::new("Game").unwrap();
         
         let application_info = vk::ApplicationInfo::builder()
